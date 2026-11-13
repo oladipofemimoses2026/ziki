@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Avatar } from "@/components/avatar";
 import { RichText } from "@/components/rich-text";
 import { ProjectOverviewJoinButton } from "@/components/project-overview-join-button";
+import { ProjectJoinRequestButton } from "@/components/project-join-request-button";
 import { Badge } from "@/components/ui/badge";
 import { issuesPath, marketingPath, orgHomePath, projectRef } from "@/lib/project-paths";
 import { publicReportPath } from "@/lib/public-project-paths";
@@ -70,11 +71,14 @@ export function ProjectOverviewView({
   data,
   currentUserId,
   workHref,
+  designHref = null,
 }: {
   data: ProjectOverviewData;
   currentUserId: string | null;
   /** Where a member starts work: the project's Marketing tab or its Ideas. */
   workHref: string | null;
+  /** The Design area (#9), for members of the project's organisation only. */
+  designHref?: string | null;
 }) {
   const { project } = data;
   const ref = projectRef(project.organisation.slug, project.slug);
@@ -151,6 +155,18 @@ export function ProjectOverviewView({
                   Sign in to Join
                 </Link>
               )
+            ) : !data.isMember && project.visibility === "public" ? (
+              // Public but not open: ask the maintainers instead (#join-requests).
+              currentUserId ? (
+                <ProjectJoinRequestButton project={project} state={data.joinRequest} size="md" />
+              ) : (
+                <Link
+                  href={`/login?callbackUrl=${encodeURIComponent(`/${ref}`)}`}
+                  className="inline-flex min-h-10 items-center justify-center rounded-xl border border-zk-border bg-zk-surface px-4 py-2 text-sm font-semibold text-zk-text hover:bg-zk-chip"
+                >
+                  Sign in to ask to join
+                </Link>
+              )
             ) : null}
           </div>
         </div>
@@ -200,6 +216,14 @@ export function ProjectOverviewView({
               >
                 View Issues →
               </Link>
+              {designHref ? (
+                <Link
+                  href={designHref}
+                  className="inline-flex min-h-10 items-center rounded-xl border border-zk-border bg-zk-surface px-4 py-2 text-sm font-semibold text-zk-text hover:bg-zk-chip"
+                >
+                  Design →
+                </Link>
+              ) : null}
             </section>
           ) : null}
         </div>

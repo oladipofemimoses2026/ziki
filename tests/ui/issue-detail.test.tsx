@@ -10,6 +10,9 @@ const mocks = vi.hoisted(() => ({ addComment: vi.fn(), requestRetest: vi.fn(), e
 vi.mock("@/app/(app)/organisations/issue-switch-action", () => ({ switchIssueWorkspaceAction: mocks.switchWorkspace }));
 vi.mock("@/app/actions/take-it-back", () => ({ takeItBackAction: mocks.takeItBack }));
 const libraryRefresh = vi.hoisted(() => vi.fn());
+const importActions = vi.hoisted(() => ({ importWork: vi.fn(), request: vi.fn(), grant: vi.fn() }));
+vi.mock("@/app/actions/import-outside-work", () => ({ importOutsideWorkAction: importActions.importWork }));
+vi.mock("@/app/actions/express-imports", () => ({ requestExpressImportAction: importActions.request, setExpressImportAction: importActions.grant }));
 vi.mock("@/app/(app)/[org]/[project]/marketing/output-box/actions", () => ({ refreshLibrary: libraryRefresh }));
 vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(window.location.search),
@@ -47,9 +50,62 @@ import { MarketingDeliverablesPanel, type MarketingDeliveryView } from "@/compon
 import { MarketingTaskDetail } from "@/components/marketing/marketing-task-detail";
 import { projectRef } from "@/lib/project-paths";
 import { DecisionCard } from "@/components/decision-card";
+import { IssueProgressReport } from "@/components/issue-progress-report";
+import { outsideWorkSkippedStages } from "@/lib/outside-work";
+import { OutsideWorkForm, ExpressImportRequestQueue } from "@/components/outside-work-form";
 import { decisionFor, type DecisionIssue, type DecisionSuggestion } from "@/lib/your-decision";
+import { designDecisionsFor } from "@/lib/design-view";
+import { DesignDecisionButtons } from "@/components/design-decision-buttons";
 
 const PR = "https://github.com/emerjent/ziki/pull/42";
+
+describe("outside-work import form and access requests (#788)", () => {
+  afterEach(cleanup);
+  const agent = { id: "agent-1", name: "SERGE", enabled: false, request: null };
+  it("explains approval before import and displays a declined import's error", async () => {
+    importActions.importWork.mockResolvedValue({ ok: false, error: "An organisation owner or admin must grant this agent express import access to this project." });
+    render(<OutsideWorkForm projectId="p1" agents={[agent]} />);
+    expect(screen.getByLabelText("Import requirements")).toHaveTextContent("Imports without approval are declined");
+    for (const [label, value] of [["Title", "Delivered search"], ["Summary", "Search now works."], ["Description", "Implemented and verified search."], ["GitHub pull request", PR], ["Tests run and results", "pnpm test passed."]]) fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    fireEvent.submit(screen.getByRole("button", { name: "Import delivered work" }).closest("form")!);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("must grant this agent express import access"));
+    expect(importActions.importWork).toHaveBeenCalledWith("agent-1", "p1", expect.objectContaining({ title: "Delivered search", pullRequestUrl: PR, testResults: "pnpm test passed." }), expect.any(String));
+  });
+  it("lets an owner request approval without offering a self-grant control", async () => {
+    importActions.request.mockResolvedValue({ ok: true });
+    render(<OutsideWorkForm projectId="p1" agents={[agent]} />);
+    expect(screen.queryByRole("button", { name: "Approve access" })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Why does this agent need express imports?"), { target: { value: "Owner-directed delivered work." } });
+    fireEvent.submit(screen.getByRole("button", { name: "Request admin approval" }).closest("form")!);
+    await waitFor(() => expect(importActions.request).toHaveBeenCalledWith("agent-1", "p1", "Owner-directed delivered work."));
+    expect(await screen.findByRole("status")).toHaveTextContent("Access requested");
+  });
+  it("shows a declined request's admin response and permits a revised request", () => {
+    render(<OutsideWorkForm projectId="p1" agents={[{ ...agent, request: { decision: "declined", response: "Provide the PR evidence first." } }]} />);
+    expect(screen.getByText(/Provide the PR evidence first/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Request admin approval" })).toBeEnabled();
+  });
+  it("shows the requesting agent and reason in the admin queue", () => {
+    render(<ExpressImportRequestQueue projectId="p1" requests={[{ agentId: "agent-1", name: "SERGE", username: "serge", owner: "Developer", reason: "Owner-directed delivered work." }]} />);
+    expect(screen.getByText("Owner-directed delivered work.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Approve access" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Decline request" })).toBeVisible();
+  });
+});
+
+describe("outside-board progress provenance (#788)", () => {
+  afterEach(cleanup);
+  it("shows omitted pre-merge steps for merged imports instead of positive verdict totals", () => {
+    render(<IssueProgressReport decisions={[]} currentStage="live" skippedStages={outsideWorkSkippedStages("merged")} />);
+    expect(screen.getByRole("button", { name: /Requires review.*Skipped: PR already merged/ })).toBeVisible();
+    expect(screen.queryByText("0 judgements")).not.toBeInTheDocument();
+  });
+  it("retains real judging for open imports", () => {
+    render(<IssueProgressReport decisions={[]} currentStage="delivered" entryCounts={{ delivered: 2 }} skippedStages={outsideWorkSkippedStages("open")} />);
+    expect(screen.getByRole("button", { name: /Requires review.*2 judgements/ })).toBeVisible();
+    expect(outsideWorkSkippedStages("open").delivered).toBeUndefined();
+  });
+});
 
 const verdict: TestVerdictView = {
   id: "tv1",
@@ -928,5 +984,52 @@ describe("TakeItBackPanel (#851)", () => {
     expect(takeItBackReasonError("")).toBeTruthy();
     expect(takeItBackReasonError("why")).toBeTruthy();
     expect(takeItBackReasonError("The merge broke saves.")).toBeNull();
+  });
+});
+
+describe("design decisions (#9)", () => {
+  const waiting = { status: "proposed" as const, authorOwnerId: "mira" };
+  const buttons = () => screen.queryAllByRole("button").map((button) => button.textContent);
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("offers decisions only to an organisation owner or admin who doesn't own the proposing agent", () => {
+    const unlinked = { ...waiting, bugId: null };
+    expect(designDecisionsFor(unlinked, { userId: "demo", membershipRole: "owner" })).toEqual(["approved", "rejected"]);
+    expect(designDecisionsFor(unlinked, { userId: "ada", membershipRole: "admin" })).toEqual(["approved", "rejected"]);
+    // A plain member, someone outside the organisation, and the agent's owner even as the organisation's owner: none.
+    expect(designDecisionsFor(unlinked, { userId: "theo", membershipRole: "member" })).toEqual([]);
+    expect(designDecisionsFor(unlinked, { userId: "olu", membershipRole: null })).toEqual([]);
+    expect(designDecisionsFor(unlinked, { userId: "mira", membershipRole: "owner" })).toEqual([]);
+    // A decided proposal offers nothing to anyone.
+    for (const status of ["approved", "rejected", "superseded"] as const) {
+      expect(designDecisionsFor({ ...unlinked, status }, { userId: "demo", membershipRole: "owner" })).toEqual([]);
+    }
+    render(<DesignDecisionButtons id="rd-1" decisions={designDecisionsFor(unlinked, { userId: "theo", membershipRole: "member" })} />);
+    expect(buttons()).toEqual([]);
+  });
+
+  it("offers Choose and Reject on a proposal linked to an issue, and Reject posts to the people-only decision route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ proposal: { id: "rd-2", status: "rejected" } }) });
+    vi.stubGlobal("fetch", fetchMock);
+    const decisions = designDecisionsFor({ ...waiting, bugId: "issue-31" }, { userId: "demo", membershipRole: "owner" });
+    expect(decisions).toEqual(["chosen", "rejected"]);
+    const user = userEvent.setup({ delay: null });
+    render(<DesignDecisionButtons id="rd-2" decisions={decisions} />);
+    expect(buttons()).toEqual(["Choose this design", "Reject"]);
+    await user.click(screen.getByRole("button", { name: "Reject" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/v1\/redesigns\/rd-2\/decision$/);
+    expect(JSON.parse(String(init.body))).toEqual({ decision: "rejected" });
+  });
+
+  it("keeps the buttons and says why when the decision is refused", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, json: async () => ({ error: "This proposal has already been decided." }) }));
+    const user = userEvent.setup({ delay: null });
+    render(<DesignDecisionButtons id="rd-3" decisions={["approved", "rejected"]} />);
+    await user.click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("This proposal has already been decided.");
+    expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
   });
 });

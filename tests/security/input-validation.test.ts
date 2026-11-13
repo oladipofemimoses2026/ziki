@@ -10,6 +10,9 @@ import { deliveryBodySchema } from "@/lib/agent-api/delivery";
 import { testVerdictBodySchema } from "@/lib/agent-api/test-verdict";
 import { addRowsSchema } from "@/lib/proof";
 import { isScanned, preflight, scanFile } from "@/lib/security/preflight-scan";
+import { parseRedesignListQuery } from "@/lib/redesign-read";
+import { encodeCursor } from "@/lib/agent-api/create-policy";
+import { sitePageUrl } from "@/lib/marketing/site-reader";
 
 /** Invalid payloads and unsafe input are rejected before they reach the database or the page. */
 const valid = { title: "Login button broken", description: "Clicking sign in does nothing on mobile." };
@@ -108,6 +111,22 @@ describe("agent write reasons (#236)", () => {
 
   it.each(bodies)("rejects a reason longer than 140 characters", (schema, body) => {
     expect(schema.safeParse({ ...body, reason: "x".repeat(141) }).success).toBe(false);
+  });
+});
+
+describe("redesign list filters (#9)", () => {
+  const query = (text: string) => () => parseRedesignListQuery(new URLSearchParams(text));
+
+  it("refuses a status, mine, limit or cursor it can't read with a 400, instead of ignoring it", () => {
+    for (const bad of ["status=pending", "status=changes_requested", "mine=yes", "limit=0", "limit=-5", "limit=abc", "limit=1.5", "cursor=not-a-cursor", "cursor="]) {
+      expect(query(bad), bad).toThrow(expect.objectContaining({ status: 400 }));
+    }
+  });
+
+  it("reads each filter it offers", () => {
+    const cursor = { createdAt: new Date("2026-11-01T10:00:00.000Z"), id: "rd-9" };
+    expect(query(`status=superseded&mine=1&limit=500&cursor=${encodeCursor(cursor)}`)()).toEqual({ status: "superseded", mine: true, limit: 100, cursor });
+    expect(query("mine=false")()).toEqual({ status: null, mine: false, limit: 25, cursor: null });
   });
 });
 
@@ -239,5 +258,30 @@ describe("preflight", () => {
     expect(result.state).toBe("warning");
     expect(result.findings).toHaveLength(1);
     expect(result.scanned).toBe(2);
+  });
+});
+
+describe("the Marketing assistant's website reader (#marketing-assistant)", () => {
+  const site = "https://acme.dev";
+
+  it("reads pages on the project's own site, with or without www", () => {
+    expect(sitePageUrl(site, "/pricing")?.toString()).toBe("https://acme.dev/pricing");
+    expect(sitePageUrl(site, "pricing")?.toString()).toBe("https://acme.dev/pricing");
+    expect(sitePageUrl(site, "https://www.acme.dev/about#team")?.toString()).toBe("https://www.acme.dev/about");
+  });
+
+  it("refuses any other address the model asks for", () => {
+    for (const path of [
+      "https://evil.com/",
+      "//evil.com/pricing",
+      "https://acme.dev.evil.com/",
+      "http://acme.dev/",
+      "https://user:pass@acme.dev/",
+      "https://acme.dev:8443/",
+      "https://169.254.169.254/latest/meta-data",
+      "file:///etc/passwd",
+    ]) {
+      expect(sitePageUrl(site, path)).toBeNull();
+    }
   });
 });

@@ -3,7 +3,7 @@ import { ASKABLE_STATUSES } from "@/lib/validations/support-thread";
 import { MergerTransparencyCard } from "@/components/merger-transparency-card";
 import { requireProject } from "@/lib/project-route";
 import Link from "next/link";
-import { ideaPath, issuesPath, projectRef, refOf } from "@/lib/project-paths";
+import { designPath, ideaPath, issuesPath, projectRef, refOf } from "@/lib/project-paths";
 import { MarketingAreaMarker } from "@/components/marketing/marketing-area";
 import { MarketingTaskDetail } from "@/components/marketing/marketing-task-detail";
 import { entryReplySelect, toEntryReplies } from "@/lib/agent-api/entry-fields";
@@ -48,6 +48,7 @@ import {
 import { ActivityTimeline, issueStepActivities, type ActivityEntry } from "@/components/activity-timeline";
 import { type AgentDecision } from "@/components/issue-agent-activity";
 import { IssueProgressReport } from "@/components/issue-progress-report";
+import { outsideWorkSkippedStages } from "@/lib/outside-work";
 import { IssueStageProvider } from "@/components/issue-stage-context";
 import { IssueComments } from "@/components/comment-thread";
 import { AgentSteerPanel } from "@/components/agent-steer-panel";
@@ -387,8 +388,9 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
     .findUnique({
       where: { id, organisationId },
       include: {
+        outsideWork: { select: { initialState: true, createdAt: true, agent: { select: { name: true, username: true, owner: { select: { name: true } } } } } },
         type: { select: { id: true, name: true, isActive: true } },
-        reporter: { select: { name: true, email: true, role: true, image: true } },
+        reporter: { select: { name: true, role: true, image: true } },
         createdByAgent: { select: { id: true, name: true, ownerUserId: true } },
         linkedIssue: { select: { number: true, title: true, isDeleted: true } },
         idea: { select: { id: true, number: true, rationale: true, convertedAt: true, _count: { select: { verdicts: true } } } },
@@ -423,8 +425,9 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
       .findUnique({
         where: { id, organisationId },
         include: {
+          outsideWork: { select: { initialState: true, createdAt: true, agent: { select: { name: true, username: true, owner: { select: { name: true } } } } } },
           type: { select: { id: true, name: true, isActive: true } },
-          reporter: { select: { name: true, email: true, role: true, image: true } },
+          reporter: { select: { name: true, role: true, image: true } },
           createdByAgent: { select: { id: true, name: true, ownerUserId: true } },
           linkedIssue: { select: { number: true, title: true, isDeleted: true } },
           idea: { select: { id: true, number: true, rationale: true, convertedAt: true, _count: { select: { verdicts: true } } } },
@@ -1471,7 +1474,8 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
           revisionCount: bug.revisionCount,
           createdAt: bug.createdAt,
           type: bug.type,
-          reporter: bug.reporter,
+          // The reporter's name only (#access-control).
+          reporter: bug.reporter ? { name: bug.reporter.name } : null,
           createdByAgent: bug.createdByAgent,
           project: {
             slug: refOf(bug.project),
@@ -1976,6 +1980,12 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
                   </a>)}
                 </div> : null}
                 {canChooseRedesign && proposal.status === "proposed" ? <ChooseRedesignButton id={proposal.id} /> : null}
+                {/* Its page in the project's Design area (#9), which only the organisation's members may open. */}
+                {membership ? (
+                  <Link href={designPath(refOf(bug.project), proposal.id)} className="inline-block text-sm font-semibold text-zk-accent hover:underline">
+                    Open in Design →
+                  </Link>
+                ) : null}
               </article>
             ))}
           </div>
@@ -2134,6 +2144,7 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
 
           {/* Progress report (#1446), where the summary strip was; its stage drives the Conversation card. */}
           <IssueProgressReport
+            skippedStages={bug.outsideWork ? outsideWorkSkippedStages(bug.outsideWork.initialState) : undefined}
             decisions={agentDecisions}
             entryCounts={{
               idea: sourceIdea?._count.verdicts ?? 0,
@@ -2167,6 +2178,17 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
 
           {deliveredBanner ? <DeliveredBanner {...deliveredBanner} /> : null}
 
+          {bug.outsideWork ? (
+            <section aria-label="Outside-board delivery" className="rounded-[20px] border border-zk-border bg-zk-surface p-5 text-sm text-zk-text2">
+              <h2 className="font-bold text-zk-text">Delivered outside the board</h2>
+              <p className="mt-2">
+                Delivered by <Link className="font-semibold text-zk-accent hover:underline" href={`/agent/${bug.outsideWork.agent.username}`}>{bug.outsideWork.agent.name}</Link>
+                {" "}for {bug.outsideWork.agent.owner.name ?? "its owner"}, with no bid or claim.
+                {bug.outsideWork.initialState === "merged" ? " The pull request was already merged; Ziki's pre-merge judging and review were skipped." : " The pull request was open at import and follows the usual judging and review steps."}
+              </p>
+              <p className="mt-2">Deployment confirmations are still required before payment.</p>
+            </section>
+          ) : null}
           {githubPanel ? <GitHubStatusPanel {...githubPanel} /> : null}
           {previewCard ? <PreviewCard {...previewCard} /> : null}
 
