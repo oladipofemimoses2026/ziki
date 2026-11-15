@@ -3,7 +3,7 @@ import { ASKABLE_STATUSES } from "@/lib/validations/support-thread";
 import { MergerTransparencyCard } from "@/components/merger-transparency-card";
 import { requireProject } from "@/lib/project-route";
 import Link from "next/link";
-import { ideaPath, issuesPath, projectRef, refOf } from "@/lib/project-paths";
+import { designPath, ideaPath, issuesPath, projectRef, refOf } from "@/lib/project-paths";
 import { MarketingAreaMarker } from "@/components/marketing/marketing-area";
 import { MarketingTaskDetail } from "@/components/marketing/marketing-task-detail";
 import { entryReplySelect, toEntryReplies } from "@/lib/agent-api/entry-fields";
@@ -48,11 +48,13 @@ import {
 import { ActivityTimeline, issueStepActivities, type ActivityEntry } from "@/components/activity-timeline";
 import { type AgentDecision } from "@/components/issue-agent-activity";
 import { IssueProgressReport } from "@/components/issue-progress-report";
+import { outsideWorkSkippedStages } from "@/lib/outside-work";
 import { IssueStageProvider } from "@/components/issue-stage-context";
 import { IssueComments } from "@/components/comment-thread";
 import { AgentSteerPanel } from "@/components/agent-steer-panel";
 import { CommentComposer } from "@/components/comment-composer";
 import { AwardBox } from "@/components/award-box";
+import { FundIssueSection } from "@/components/coins/fund-issue-section";
 import { PlanReviewCard, type PlanCardView } from "@/components/plan-review-card";
 import { currentPlan, planDeadline, type PlanView } from "@/lib/agent-api/plan";
 import { difficultyLabel } from "@/lib/difficulty";
@@ -112,6 +114,10 @@ import { RestoreIssueButton } from "@/components/restore-issue-button";
 import { canAssignTicket } from "@/lib/ticket-assignment";
 import { SelfAssignButton } from "@/components/self-assign-button";
 import { IssueActionsMenu } from "@/components/issue-actions-menu";
+import { OwnerStatusMenu } from "@/components/owner-status-menu";
+import { YourTurnCard, type YourTurn } from "@/components/your-turn-card";
+import { AssignToItem, MoreTimeItem, StopMyAgentItem } from "@/components/issue-menu-items";
+import { heldByMyAgent, webAgentFor } from "@/lib/web-agent";
 import { CopyIssueSummaryButton } from "@/components/copy-issue-summary-button";
 import { EditableIssueDescription } from "@/components/editable-issue-description";
 import { SecurityFindingPanel } from "@/components/security-finding-panel";
@@ -387,8 +393,9 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
     .findUnique({
       where: { id, organisationId },
       include: {
+        outsideWork: { select: { initialState: true, createdAt: true, agent: { select: { name: true, username: true, owner: { select: { name: true } } } } } },
         type: { select: { id: true, name: true, isActive: true } },
-        reporter: { select: { name: true, email: true, role: true, image: true } },
+        reporter: { select: { name: true, role: true, image: true } },
         createdByAgent: { select: { id: true, name: true, ownerUserId: true } },
         linkedIssue: { select: { number: true, title: true, isDeleted: true } },
         idea: { select: { id: true, number: true, rationale: true, convertedAt: true, _count: { select: { verdicts: true } } } },
@@ -423,8 +430,9 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
       .findUnique({
         where: { id, organisationId },
         include: {
+          outsideWork: { select: { initialState: true, createdAt: true, agent: { select: { name: true, username: true, owner: { select: { name: true } } } } } },
           type: { select: { id: true, name: true, isActive: true } },
-          reporter: { select: { name: true, email: true, role: true, image: true } },
+          reporter: { select: { name: true, role: true, image: true } },
           createdByAgent: { select: { id: true, name: true, ownerUserId: true } },
           linkedIssue: { select: { number: true, title: true, isDeleted: true } },
           idea: { select: { id: true, number: true, rationale: true, convertedAt: true, _count: { select: { verdicts: true } } } },
@@ -860,6 +868,8 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
     prisma.bug.findUnique({ where: { id: bug.id }, select: { reward: true, rewardFixedAt: true } }),
     loadOptional<Awaited<ReturnType<typeof rewardEstimatesFor>>>("reward estimates", [], () => rewardEstimatesFor(bug.id)),
   ]);
+  // #ziki-coins: the agreed estimate, once anyone has given one (never the $1 an issue starts with), for the funding box in the Reward card.
+  const fundingEstimate = rewardRow && rewardEstimates.length > 0 ? { dollars: Number(rewardRow.reward), count: rewardEstimates.length } : null;
   const confirmationsData = await loadOptional<(ConfirmationsData & { confirmed?: boolean }) | null>("confirmations", null, () =>
     // #confirmation-files: other confirmers' files show once the viewer has confirmed (admins always).
     listConfirmations({ organisationId: bug.organisationId, projectId: bug.projectId }, bug.id, { userId: user.id, admin: canChooseRedesign }),
@@ -1100,6 +1110,49 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
     bug.status !== "closed" &&
     hasLinkedPullRequest &&
     (isAssignee || isHolder || isDeliverer || canEdit);
+  // #owner-control: what the viewer can do here by hand, through their agent (Your turn card, ⋯ menu).
+  const [viewerAgent, myHold] = bug.isDeleted
+    ? [null, null]
+    : await Promise.all([
+        loadOptional("viewer agent", null, () => webAgentFor(user.id, bug.organisationId)),
+        loadOptional("my agent's hold", null, () => heldByMyAgent(user.id, bug.id)),
+      ]);
+  const yourTurn: YourTurn | null = (() => {
+    if (bug.isDeleted) return null;
+    if (myHold?.status === "offered") return { kind: "offer", agentName: myHold.agent.name };
+    if (myHold?.status === "active" && bug.substatus === "in_progress" && bug.track !== "marketing") {
+      return { kind: "deliver", agentName: myHold.agent.name };
+    }
+    if (!viewerAgent) return null;
+    const confirmations = confirmationsData?.confirmations ?? 0;
+    const needed = confirmationsData?.confirmationsNeeded ?? 0;
+    if (bug.substatus === "requires_confirmation" && needed > 0 && confirmations >= needed) {
+      return { kind: "open", agentName: viewerAgent.name, confirmations, needed };
+    }
+    // The agent that delivered can't judge its own work.
+    if (bug.substatus === "requires_review" && !isDeliverer) return { kind: "verdict", agentName: viewerAgent.name };
+    if (bug.substatus === "accepted" && !isDeliverer && (viewerAgent.level === "manager" || viewerAgent.level === "merger")) {
+      return { kind: "review", agentName: viewerAgent.name };
+    }
+    return null;
+  })();
+  // The owner can hand open work straight to someone's agent; a complex issue is won by a bid and a plan instead.
+  const assignableMembers =
+    canTriage && !bug.isDeleted && bug.difficulty !== "complex" && (bug.status === "open" || bug.status === "in_progress")
+      ? await loadOptional("assignable members", [] as { id: string; name: string; agentName: string }[], async () => {
+          const agents = await prisma.agent.findMany({
+            where: { revokedAt: null, ...activeIn(bug.organisationId), owner: { memberships: { some: { organisationId: bug.organisationId } } } },
+            orderBy: { createdAt: "asc" },
+            select: { name: true, owner: { select: { id: true, name: true } } },
+          });
+          const byOwner = new Map<string, { id: string; name: string; agentName: string }>();
+          for (const agent of agents) {
+            if (!byOwner.has(agent.owner.id)) byOwner.set(agent.owner.id, { id: agent.owner.id, name: agent.owner.name ?? "Someone", agentName: agent.name });
+          }
+          return [...byOwner.values()];
+        })
+      : [];
+  const myWorkingAgent = myHold && myHold.status !== "offered" ? myHold.agent.name : null;
   const prActivity = activities.find((a) => {
     const meta = a.metadata as Record<string, unknown> | null;
     return meta && (meta.screenshots || meta.testResults || meta.field === "pullRequestUrl");
@@ -1471,7 +1524,8 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
           revisionCount: bug.revisionCount,
           createdAt: bug.createdAt,
           type: bug.type,
-          reporter: bug.reporter,
+          // The reporter's name only (#access-control).
+          reporter: bug.reporter ? { name: bug.reporter.name } : null,
           createdByAgent: bug.createdByAgent,
           project: {
             slug: refOf(bug.project),
@@ -1811,7 +1865,9 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
                 viewerId={user.id}
                 canEstimate={!bug.isDeleted && bug.status !== "closed"}
                 caption="paid upon accepted delivery"
-              />
+              >
+                <FundIssueSection bugId={bug.id} userId={user.id} estimate={fundingEstimate} />
+              </IssueRewardPanel>
             ) : null}
 
             <section className="flex flex-col gap-2 rounded-[20px] border border-zk-border bg-zk-surface px-4 py-3.5">
@@ -1976,6 +2032,12 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
                   </a>)}
                 </div> : null}
                 {canChooseRedesign && proposal.status === "proposed" ? <ChooseRedesignButton id={proposal.id} /> : null}
+                {/* Its page in the project's Design area (#9), which only the organisation's members may open. */}
+                {membership ? (
+                  <Link href={designPath(refOf(bug.project), proposal.id)} className="inline-block text-sm font-semibold text-zk-accent hover:underline">
+                    Open in Design →
+                  </Link>
+                ) : null}
               </article>
             ))}
           </div>
@@ -2064,7 +2126,12 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
                     pullRequestUrl: bug.pullRequestUrl ?? null,
                   }}
                 />
+                {assignableMembers.length > 0 ? (
+                  <AssignToItem bugId={bug.id} members={assignableMembers} currentAssigneeId={bug.assigneeId} />
+                ) : null}
+                {myWorkingAgent ? <MoreTimeItem bugId={bug.id} agentName={myWorkingAgent} /> : null}
                 {canMarkDuplicate ? <MarkDuplicateButton bugId={bug.id} /> : null}
+                {myWorkingAgent ? <StopMyAgentItem bugId={bug.id} agentName={myWorkingAgent} /> : null}
                 {canDeleteHere ? (
                   <DeleteIssueButton bugId={bug.id} bugTitle={bug.title} counts={keptCounts} variant="danger" size="sm" />
                 ) : null}
@@ -2134,6 +2201,7 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
 
           {/* Progress report (#1446), where the summary strip was; its stage drives the Conversation card. */}
           <IssueProgressReport
+            skippedStages={bug.outsideWork ? outsideWorkSkippedStages(bug.outsideWork.initialState) : undefined}
             decisions={agentDecisions}
             entryCounts={{
               idea: sourceIdea?._count.verdicts ?? 0,
@@ -2153,7 +2221,8 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
           />
 
           <NextStepBar step={liveFix ? liveNextStep(liveFix.check, liveFix.repo) : nextStep} agentInstructions={agentInstructions} />
-          {yourDecision ? <DecisionCard issueId={bug.id} decision={yourDecision} /> : null}
+          {yourTurn ? <YourTurnCard bugId={bug.id} turn={yourTurn} /> : null}
+          {yourDecision ?<DecisionCard issueId={bug.id} decision={yourDecision} /> : null}
 
           <IssueBlockersPanel
             projectSlug={refOf(bug.project)}
@@ -2167,6 +2236,17 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
 
           {deliveredBanner ? <DeliveredBanner {...deliveredBanner} /> : null}
 
+          {bug.outsideWork ? (
+            <section aria-label="Outside-board delivery" className="rounded-[20px] border border-zk-border bg-zk-surface p-5 text-sm text-zk-text2">
+              <h2 className="font-bold text-zk-text">Delivered outside the board</h2>
+              <p className="mt-2">
+                Delivered by <Link className="font-semibold text-zk-accent hover:underline" href={`/agent/${bug.outsideWork.agent.username}`}>{bug.outsideWork.agent.name}</Link>
+                {" "}for {bug.outsideWork.agent.owner.name ?? "its owner"}, with no bid or claim.
+                {bug.outsideWork.initialState === "merged" ? " The pull request was already merged; Ziki's pre-merge judging and review were skipped." : " The pull request was open at import and follows the usual judging and review steps."}
+              </p>
+              <p className="mt-2">Deployment confirmations are still required before payment.</p>
+            </section>
+          ) : null}
           {githubPanel ? <GitHubStatusPanel {...githubPanel} /> : null}
           {previewCard ? <PreviewCard {...previewCard} /> : null}
 
@@ -2180,6 +2260,7 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
               ideaHref={newIssueHref(refOf(bug.project), issueHref(bug))}
             />
           ) : null}
+
 
               {/* Who has the issue, while it is the latest thing (In progress); the timeline below keeps the award after that. */}
               {(hold?.status === "active" || hold?.status === "planning") && bug.status === "in_progress" ? <AwardBox hold={hold} agentPaused={Boolean(workingAgent?.pausedAt)} bugId={bug.id} isWatching={isWatchingIssue} isIssueOwner={bug.reporterId === user.id} /> : null}
@@ -2372,10 +2453,20 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
               {bug.isDeleted ? (
                 <span className={`${issueChipBaseClass} bg-zk-bad-bg text-zk-bad-fg`}>Deleted</span>
               ) : null}
-              <Badge className={`${issueChipBaseClass} ${issueStatusChipClass[bug.substatus]}`}>
-                <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
-                {stateLabel(bug.substatus)}
-              </Badge>
+              {/* #owner-control: the owner's chip opens the moves they can make by hand; everyone else sees the plain chip. */}
+              {canTriage && !bug.isDeleted ? (
+                <OwnerStatusMenu
+                  bugId={bug.id}
+                  substatus={bug.substatus}
+                  label={stateLabel(bug.substatus)}
+                  chipClassName={`${issueChipBaseClass} ${issueStatusChipClass[bug.substatus]}`}
+                />
+              ) : (
+                <Badge className={`${issueChipBaseClass} ${issueStatusChipClass[bug.substatus]}`}>
+                  <span className="h-1.5 w-1.5 rounded-full bg-current" aria-hidden />
+                  {stateLabel(bug.substatus)}
+                </Badge>
+              )}
               {/* #plan-review: the one new label, the issue's difficulty; complex issues go through plan review. */}
               <span className={`${issueChipBaseClass} ${bug.difficulty === "complex" ? "bg-zk-warn-bg text-zk-warn-fg" : "bg-zk-chip text-zk-text2"}`} data-testid="difficulty-chip" title="Set when the idea was converted; fixed once the issue has a bid.">
                 {difficultyLabel[bug.difficulty]}
@@ -2442,7 +2533,9 @@ export default async function BugDetailPage({ params, searchParams }: BugPagePro
               estimates={rewardEstimates}
               viewerId={user.id}
               canEstimate={!bug.isDeleted && bug.status !== "closed"}
-            />
+            >
+              <FundIssueSection bugId={bug.id} userId={user.id} estimate={fundingEstimate} />
+            </IssueRewardPanel>
           ) : null}
 
           {/* People, compact: one row each, label on the left. */}

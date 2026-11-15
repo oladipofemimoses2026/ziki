@@ -2,9 +2,10 @@ import Link from "next/link";
 import { Avatar } from "@/components/avatar";
 import { RichText } from "@/components/rich-text";
 import { ProjectOverviewJoinButton } from "@/components/project-overview-join-button";
+import { ProjectJoinRequestButton } from "@/components/project-join-request-button";
 import { Badge } from "@/components/ui/badge";
 import { issuesPath, marketingPath, orgHomePath, projectRef } from "@/lib/project-paths";
-import { publicReportPath } from "@/lib/public-project-paths";
+import { publicIssuesPath, publicReportPath } from "@/lib/public-project-paths";
 import { safeHref } from "@/lib/rich-text";
 import type { ProjectOverviewData } from "@/lib/project-overview";
 
@@ -70,11 +71,14 @@ export function ProjectOverviewView({
   data,
   currentUserId,
   workHref,
+  designHref = null,
 }: {
   data: ProjectOverviewData;
   currentUserId: string | null;
   /** Where a member starts work: the project's Marketing tab or its Ideas. */
   workHref: string | null;
+  /** The Design area (#9), for members of the project's organisation only. */
+  designHref?: string | null;
 }) {
   const { project } = data;
   const ref = projectRef(project.organisation.slug, project.slug);
@@ -118,13 +122,29 @@ export function ProjectOverviewView({
               ) : null}
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             {project.acceptsGuestIdeas ? (
+              <>
+                <Link
+                  href={publicReportPath({ orgSlug: project.organisation.slug, projectSlug: project.slug }, "problem")}
+                  className="inline-flex min-h-10 items-center justify-center rounded-xl border border-zk-border bg-zk-surface px-4 py-2 text-sm font-semibold text-zk-text hover:bg-zk-chip"
+                >
+                  Report a problem
+                </Link>
+                <Link
+                  href={publicReportPath({ orgSlug: project.organisation.slug, projectSlug: project.slug }, "improvement")}
+                  className="inline-flex min-h-10 items-center justify-center rounded-xl border border-zk-border bg-zk-surface px-4 py-2 text-sm font-semibold text-zk-text hover:bg-zk-chip"
+                >
+                  Suggest an improvement
+                </Link>
+              </>
+            ) : null}
+            {project.visibility === "public" ? (
               <Link
-                href={publicReportPath({ orgSlug: project.organisation.slug, projectSlug: project.slug })}
+                href={publicIssuesPath({ orgSlug: project.organisation.slug, projectSlug: project.slug })}
                 className="inline-flex min-h-10 items-center justify-center rounded-xl border border-zk-border bg-zk-surface px-4 py-2 text-sm font-semibold text-zk-text hover:bg-zk-chip"
               >
-                Report an issue
+                Browse public issues
               </Link>
             ) : null}
             {data.canManage ? (
@@ -151,6 +171,18 @@ export function ProjectOverviewView({
                   Sign in to Join
                 </Link>
               )
+            ) : !data.isMember && project.visibility === "public" ? (
+              // Public but not open: ask the maintainers instead (#join-requests).
+              currentUserId ? (
+                <ProjectJoinRequestButton project={project} state={data.joinRequest} size="md" />
+              ) : (
+                <Link
+                  href={`/login?callbackUrl=${encodeURIComponent(`/${ref}`)}`}
+                  className="inline-flex min-h-10 items-center justify-center rounded-xl border border-zk-border bg-zk-surface px-4 py-2 text-sm font-semibold text-zk-text hover:bg-zk-chip"
+                >
+                  Sign in to ask to join
+                </Link>
+              )
             ) : null}
           </div>
         </div>
@@ -172,6 +204,16 @@ export function ProjectOverviewView({
             ) : (
               <p className="mt-3 text-sm text-zk-muted">No project goal has been added yet.</p>
             )}
+            <div className="mt-5 border-t border-zk-divider pt-4">
+              <h3 className="text-sm font-semibold text-zk-text">Intended users</h3>
+              <p className="mt-1 text-sm leading-6 text-zk-text2">
+                {project.acceptsGuestIdeas
+                  ? `People using ${project.name} and outside contributors reporting problems or suggesting improvements.`
+                  : project.isOpenForContributors
+                    ? `Contributors and team members collaborating on ${project.name}.`
+                    : `Maintainers and members of ${project.organisation.name}.`}
+              </p>
+            </div>
           </section>
 
           <section aria-labelledby="contributor-guidelines-heading" className="rounded-2xl border border-zk-border bg-zk-surface p-5 sm:p-6">
@@ -200,6 +242,14 @@ export function ProjectOverviewView({
               >
                 View Issues →
               </Link>
+              {designHref ? (
+                <Link
+                  href={designHref}
+                  className="inline-flex min-h-10 items-center rounded-xl border border-zk-border bg-zk-surface px-4 py-2 text-sm font-semibold text-zk-text hover:bg-zk-chip"
+                >
+                  Design →
+                </Link>
+              ) : null}
             </section>
           ) : null}
         </div>

@@ -9,6 +9,7 @@ import { agentCommentSchema } from "@/lib/agent-api/issues";
 import { createGoalSchema, splitGoalPoolSchema, updateGoalStatusSchema } from "@/lib/validations/goal";
 import { createJobSchema, jobReviewSchema, submitJobSchema } from "@/lib/validations/job";
 import { redesignSchema } from "@/lib/redesigns";
+import { REDESIGN_LIST_QUERY, REDESIGN_STATUSES } from "@/lib/redesign-read";
 import { missionCoverageSchema, nextMissionSchema } from "@/lib/missions";
 import { bidSchema } from "@/lib/agent-api/bid";
 import { addRowsSchema, rowActionSchema } from "@/lib/proof";
@@ -18,6 +19,8 @@ import { structureInputSchema } from "@/lib/agent-api/structure";
 import { testVerdictBodySchema } from "@/lib/agent-api/test-verdict";
 import { forceMergeBodySchema } from "@/lib/agent-api/force-merge";
 import { deliveryBodySchema } from "@/lib/agent-api/delivery";
+import { outsideWorkSchema } from "@/lib/agent-api/outside-work";
+import { expressImportRequestSchema } from "@/lib/agents/express-import";
 import { confirmationSchema } from "@/lib/agent-api/confirmations";
 import { penaltySchema } from "@/lib/agent-api/confirmation-penalties";
 import { ideaVerdictFields } from "@/lib/agent-api/idea-verdicts";
@@ -91,6 +94,8 @@ const ROUTE_SCHEMAS: Record<string, z.ZodType> = {
   // The route's own schema: the shared comment fields plus summary (#730), projectId and attachmentIds.
   ziki_comment: agentCommentSchema,
   ziki_bid: bidSchema,
+  ziki_import_outside_work: outsideWorkSchema,
+  ziki_request_express_import_access: expressImportRequestSchema,
   ziki_extend_deadline: extendSchema,
   ziki_confirm_issue: confirmationSchema,
   ziki_penalise_confirmation: penaltySchema,
@@ -166,6 +171,19 @@ describe("MCP tools match the route body schemas", () => {
       const counts = tools.find((tool) => tool.name === "ziki_count_issues")!;
       expect(counts.query).toContain("track");
       expect(describedAs(counts.input.track)).toBeTruthy();
+    }
+  });
+
+  it("reads redesign proposals back with exactly the query and statuses the routes take (#9)", () => {
+    for (const tools of [TOOLS, CLI_TOOLS]) {
+      const list = tools.find((tool) => tool.name === "ziki_list_redesigns")!;
+      // projectScoped adds projectId to the query.
+      expect([...(list.query ?? []), ...(list.projectScoped ? ["projectId"] : [])].sort()).toEqual([...REDESIGN_LIST_QUERY].sort());
+      expect((list.input.status as z.ZodType).safeParse("pending").success).toBe(false);
+      for (const status of REDESIGN_STATUSES) expect((list.input.status as z.ZodType).safeParse(status).success).toBe(true);
+      const get = tools.find((tool) => tool.name === "ziki_get_redesign")!;
+      expect(get).toMatchObject({ method: "GET", route: "/redesigns/{id}" });
+      expect(get.body ?? []).toEqual([]);
     }
   });
 

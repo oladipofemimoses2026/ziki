@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { joinOpenProjectAction } from "@/app/actions/project-join-requests";
+import { ProjectJoinRequestButton } from "@/components/project-join-request-button";
 import { projectPath, projectRef } from "@/lib/project-paths";
 import { publicReportPath } from "@/lib/public-project-paths";
 
@@ -64,15 +65,26 @@ export function DiscoverProjectCard({ project }: { project: DiscoverableProject 
                 </Link>
               </h3>
             </div>
-            {project.isOpenForContributors ? (
-              <Badge className="shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-[11px] font-semibold text-emerald-400">
-                Open for Contributors
+            <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <Badge
+                className={
+                  project.acceptsGuestIdeas
+                    ? "shrink-0 rounded-full border border-sky-500/30 bg-sky-500/10 text-[11px] font-semibold text-sky-400"
+                    : "shrink-0 rounded-full border border-zk-border bg-zk-chip text-[11px] font-medium text-zk-muted"
+                }
+              >
+                {project.acceptsGuestIdeas ? "Accepts feedback" : "Feedback closed"}
               </Badge>
-            ) : (
-              <Badge className="shrink-0 rounded-full border border-zk-border bg-zk-chip text-[11px] font-medium text-zk-text2">
-                Not open for now
-              </Badge>
-            )}
+              {project.isOpenForContributors ? (
+                <Badge className="shrink-0 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-[11px] font-semibold text-emerald-400">
+                  Open for Contributors
+                </Badge>
+              ) : (
+                <Badge className="shrink-0 rounded-full border border-zk-border bg-zk-chip text-[11px] font-medium text-zk-text2">
+                  Not open for now
+                </Badge>
+              )}
+            </div>
           </div>
 
           <p className="line-clamp-2 text-sm text-zk-text2">
@@ -149,13 +161,11 @@ export function DiscoverProjectCard({ project }: { project: DiscoverableProject 
                   </Button>
                 </Link>
               ) : (
-                <Button
-                  variant="secondary"
-                  disabled
-                  className="text-xs font-medium opacity-60"
-                >
-                  Not open for now
-                </Button>
+                <Link href={`/login?callbackUrl=${encodeURIComponent("/discover")}`}>
+                  <Button variant="secondary" className="text-xs font-semibold">
+                    Sign in to ask to join
+                  </Button>
+                </Link>
               )
             ) : currentStatus === "member" ? (
               <Link href={projectPath(projectRef(project.organisation.slug, project.slug))}>
@@ -163,11 +173,8 @@ export function DiscoverProjectCard({ project }: { project: DiscoverableProject 
                   Open Project →
                 </Button>
               </Link>
-            ) : currentStatus === "rejected" ? (
-              <Button variant="secondary" disabled className="text-xs font-medium opacity-60">
-                Request declined
-              </Button>
             ) : project.isOpenForContributors ? (
+              // Open means anyone may join, so an earlier declined request no longer stands in the way.
               <div className="flex flex-col items-end gap-1">
                 <Button variant="primary" onClick={join} disabled={joining} className="text-xs font-bold">
                   {joining ? "Joining…" : "Join"}
@@ -175,13 +182,7 @@ export function DiscoverProjectCard({ project }: { project: DiscoverableProject 
                 {joinError ? <p role="alert" className="text-xs text-zk-bad-fg">{joinError}</p> : null}
               </div>
             ) : (
-              <Button
-                variant="secondary"
-                disabled
-                className="text-xs font-medium opacity-60"
-              >
-                Not open for now
-              </Button>
+              <ProjectJoinRequestButton project={project} state={currentStatus} />
             )}
           </div>
         </div>

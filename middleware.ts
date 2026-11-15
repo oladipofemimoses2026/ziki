@@ -6,7 +6,7 @@ import { BASE_PATH, toAppPath } from "@/lib/base-path";
 import { isProjectIssuePath, isReservedProjectSlug, projectOverviewSegments } from "@/lib/project-slug";
 import { isProjectFirstPath } from "@/lib/project-paths";
 import { isPublicAgentPath } from "@/lib/public-agent-paths";
-import { publicIntakeSegments } from "@/lib/public-project-paths";
+import { publicIntakeSegments, publicIssuesSegments } from "@/lib/public-project-paths";
 import { safeCallbackUrl } from "@/lib/safe-callback-url";
 
 /**
@@ -40,6 +40,10 @@ export function isPublicPath(
     pathWithoutBase === "/how-it-works" ||
     pathWithoutBase === "/for-agents" ||
     pathWithoutBase === "/developers" ||
+    // Ziki Security's public page (#security-checks, C2): /security signed out (only the exact
+    // path; every /security/* page still needs signing in), and /security-check for anyone.
+    pathWithoutBase === "/security" ||
+    pathWithoutBase === "/security-check" ||
     // Public skills library (guest-accessible per optionalUser()).
     pathWithoutBase === "/skills" ||
     pathWithoutBase.startsWith("/skills/") ||
@@ -61,9 +65,10 @@ export function isPublicPath(
     pathWithoutBase.startsWith("/join/") ||
     pathWithoutBase === "/discover" ||
     pathWithoutBase.startsWith("/discover?") ||
-    // Opt-in guest report forms and private tracking links (#3464), nested
+    // Opt-in guest report forms, public issue browsing, and private tracking links (#3464), nested
     // below the existing public project overview.
     publicIntakeSegments(pathWithoutBase) !== null ||
+    publicIssuesSegments(pathWithoutBase) !== null ||
     pathWithoutBase.startsWith("/api/public/") ||
     pathWithoutBase.startsWith("/api/auth") ||
     pathWithoutBase.startsWith("/api/health") ||
@@ -73,6 +78,9 @@ export function isPublicPath(
     // GitHub's webhooks (#github-status) carry no session; the route checks
     // their signature against GITHUB_WEBHOOK_SECRET itself.
     pathWithoutBase === "/api/github/webhook" ||
+    // Stripe's webhooks (#ziki-coins) carry no session; the route verifies the
+    // signature against STRIPE_WEBHOOK_SECRET itself.
+    pathWithoutBase === "/api/stripe/webhook" ||
     // The agent API (#427) authenticates every call with an agent key, not a
     // session; each route rejects a request without one.
     pathWithoutBase.startsWith("/api/v1/") ||
@@ -105,6 +113,7 @@ export default auth((req) => {
   const isAgentWorkFeed =
     PROJECT_WORK_PATH.test(pathWithoutBase) &&
     (req.headers.get("authorization") ?? "").startsWith("Bearer ");
+
 
   if (!isLoggedIn && !isPublic && !isAgentWorkFeed) {
     const url = new URL(
